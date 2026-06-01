@@ -8,7 +8,8 @@ class SandboxManager:
     def __init__(self):
         self.client = docker.from_env()
         self.containers={}
-    async def deploy(self,submission_id, zip_path):
+
+    async def build(self, submission_id, zip_path):
         extract_path=f"submissions/{submission_id}/code"
 
         await asyncio.to_thread(self._extract_zip, zip_path, extract_path)
@@ -16,13 +17,20 @@ class SandboxManager:
 
         image_tag=f"submission-{submission_id}-latest"
         await self._build_image(extract_path,image_tag)
-        
+
+        self.containers.setdefault(submission_id, {})
+        self.containers[submission_id]["image_tag"] = image_tag
+        return image_tag
+
+    async def run(self, submission_id, image_tag, purpose="run"):
+        await asyncio.to_thread(self.stop_container, submission_id)
+
         def run_container():
             c=self.client.containers.run(
                 image=image_tag,
                 detach=True,
                 runtime="runsc",
-                name=f"sandbox-{submission_id[:8]}",
+                name=f"sandbox-{submission_id[:8]}-{purpose}",
 
                 cpuset_cpus="2,3",
                 cpu_period=100000,
@@ -49,8 +57,18 @@ class SandboxManager:
         else: host_port=container.ports["8080/tcp"][0]["HostPort"]
         endpoint=f"http://localhost:{host_port}"
 
-        self.containers[submission_id]={"container": container, "endpoint": endpoint}
+        self.containers.setdefault(submission_id, {})
+        self.containers[submission_id].update({
+            "container": container,
+            "endpoint": endpoint,
+            "image_tag": image_tag,
+            "purpose": purpose,
+        })
         return endpoint
+
+    async def deploy(self,submission_id, zip_path):
+        image_tag = await self.build(submission_id, zip_path)
+        return await self.run(submission_id, image_tag, purpose="initial")
     
     async def _build_image(self,context_path,tag):
         loop=asyncio.get_event_loop()
@@ -69,8 +87,12 @@ class SandboxManager:
         if "container" not in data:
             return {
                 "submission_id": submission_id,
+                "contestant_name": data.get("contestant_name"),
+                "language": data.get("language"),
                 "status": data.get("status", "unknown"),
-                "endpoint": None
+                "endpoint": None,
+                "result": data.get("result"),
+                "error": data.get("error"),
             }
             
         # 2. Once the build finishes, it has a container object we can query
@@ -84,16 +106,32 @@ class SandboxManager:
         
         return {
             "submission_id": submission_id,
+            "contestant_name": data.get("contestant_name"),
+            "language": data.get("language"),
             "status": data.get("status", current_status),
-            "endpoint": data.get("endpoint") if current_status == "running" else None
+            "endpoint": data.get("endpoint") if current_status == "running" else None,
+            "result": data.get("result"),
+            "error": data.get("error"),
         }
 
-    def stop(self, submission_id: str):
+    def stop_container(self, submission_id: str):
         if submission_id in self.containers:
             container = self.containers[submission_id].get("container")
             if container is not None:
-                container.stop()
-                container.remove()
+                try:
+                    container.stop()
+                except docker.errors.APIError:
+                    pass
+                try:
+                    container.remove()
+                except (docker.errors.APIError, docker.errors.NotFound):
+                    pass
+            self.containers[submission_id].pop("container", None)
+            self.containers[submission_id].pop("endpoint", None)
+            self.containers[submission_id].pop("purpose", None)
+
+    def delete_submission_record(self, submission_id: str):
+        if submission_id in self.containers:
             del self.containers[submission_id]
 
     def _extract_zip(self, zip_path, extract_path):

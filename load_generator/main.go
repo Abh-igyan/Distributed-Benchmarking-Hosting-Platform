@@ -1,7 +1,6 @@
 package main
 
 import (
-	"sort"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,20 +22,20 @@ type BenchmarkRequest struct {
 	DurationSec  int    `json:"duration_seconds"`
 }
 
-type BenchmarkResult struct{
-	SubmissionID string            `json:"submission_id"`
-	Total        uint64            `json:"total_requests"`
-	Success      uint64            `json:"success"`
-	Failures     uint64            `json:"failures"`
-	TPS          float64           `json:"tps"`
-	ErrorRate    float64           `json:"error_rate"`
-	AvgLatencyMs float64           `json:"avg_latency_ms"`
-	MinLatencyMs float64           `json:"min_latency_ms"`
-	MaxLatencyMs float64           `json:"max_latency_ms"`
-	P50LatencyMs float64           `json:"p50_latency_ms"`
-	P90LatencyMs float64           `json:"p90_latency_ms"`
-	P99LatencyMs float64           `json:"p99_latency_ms"`
-	StatusCodes  map[int]uint64    `json:"status_codes"`
+type BenchmarkResult struct {
+	SubmissionID string         `json:"submission_id"`
+	Total        uint64         `json:"total_requests"`
+	Success      uint64         `json:"success"`
+	Failures     uint64         `json:"failures"`
+	TPS          float64        `json:"tps"`
+	ErrorRate    float64        `json:"error_rate"`
+	AvgLatencyMs float64        `json:"avg_latency_ms"`
+	MinLatencyMs float64        `json:"min_latency_ms"`
+	MaxLatencyMs float64        `json:"max_latency_ms"`
+	P50LatencyMs float64        `json:"p50_latency_ms"`
+	P90LatencyMs float64        `json:"p90_latency_ms"`
+	P99LatencyMs float64        `json:"p99_latency_ms"`
+	StatusCodes  map[int]uint64 `json:"status_codes"`
 }
 
 // Global, optimized HTTP client. Reuses TCP handshakes .
@@ -66,6 +66,20 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if req.Endpoint == "" {
+		http.Error(w, "endpoint is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.Concurrency <= 0 {
+		http.Error(w, "concurrency must be > 0", http.StatusBadRequest)
+		return
+	}
+
+	if req.DurationSec <= 0 {
+		http.Error(w, "duration_seconds must be > 0", http.StatusBadRequest)
+		return
+	}
 
 	// Spin off the load testing in a non-blocking background Goroutine
 	result := startStressTest(req.SubmissionID, req.Endpoint, req.Concurrency, time.Duration(req.DurationSec)*time.Second)
@@ -74,7 +88,7 @@ func handleBenchmark(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func startStressTest(subID, endpoint string, concurrency int, duration time.Duration) BenchmarkResult{
+func startStressTest(subID, endpoint string, concurrency int, duration time.Duration) BenchmarkResult {
 	log.Printf("[%s] Target initialized: %s | Bots: %d | Duration: %s", subID, endpoint, concurrency, duration)
 
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
@@ -85,17 +99,17 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 	var wg sync.WaitGroup
 	var collectorWg sync.WaitGroup
 
-	latencyChan :=make(chan int64, 100000)
+	latencyChan := make(chan int64, 100000)
 	statusCodes := sync.Map{}
 
 	var latencies []int64
 
 	collectorWg.Add(1)
-	go func(){
+	go func() {
 		defer collectorWg.Done()
 
-		for lat := range latencyChan{
-			latencies=append(latencies, lat)
+		for lat := range latencyChan {
+			latencies = append(latencies, lat)
 		}
 	}()
 
@@ -132,7 +146,7 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 					resp, err := httpClient.Do(req)
 					latencyNs := time.Since(requestStart).Nanoseconds()
 
-					select{
+					select {
 					case latencyChan <- latencyNs:
 					default:
 					}
@@ -145,23 +159,21 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 						continue
 					}
 
-					code:= resp.StatusCode
-					val, _ :=statusCodes.LoadOrStore(code, new(uint64))
-					atomic.AddUint64(val.(*uint64),1)
+					code := resp.StatusCode
+					val, _ := statusCodes.LoadOrStore(code, new(uint64))
+					atomic.AddUint64(val.(*uint64), 1)
 
 					if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
 						_, _ = io.Copy(io.Discard, resp.Body)
 						resp.Body.Close()
 						atomic.AddUint64(&successCount, 1)
 					} else {
-						body, _ := io.ReadAll(resp.Body)
+						_, _ = io.Copy(io.Discard, resp.Body)
 						resp.Body.Close()
 
-						log.Printf(
-							"Bad response | status=%d | body=%s",
-							resp.StatusCode,
-							string(body),
-						)
+						if atomic.LoadUint64(&failCount) < 10 {
+							log.Printf("Bad response | status=%d", resp.StatusCode)
+						}
 
 						atomic.AddUint64(&failCount, 1)
 					}
