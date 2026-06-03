@@ -1,37 +1,49 @@
-# IICPC Distributed Benchmarking Platform
+# Vahini: Trading Code Benchmarking & Hosting Platform
 
-Prototype for the IICPC Summer Hackathon 2026 challenge: securely host contestant trading infrastructure, stress it with a bot fleet, collect performance/correctness metrics, and stream results to a live leaderboard.
+Vahini is a benchmarking and hosting platform for evaluating contestant-submitted trading engines. It accepts source-code ZIP submissions, builds and runs them in isolated Docker containers, validates exchange correctness, drives high-concurrency order traffic with a Go load generator, persists benchmark results in PostgreSQL, and streams rankings to a React leaderboard.
+
+The name **Vahini** means "flowing" or "stream" in Hindi and Sanskrit, reflecting the platform's focus on continuous order flow, pressure testing, and live benchmark visibility.
+
+![Vahini overview dashboard](docs/images/vahini-overview.png)
+
+> Screenshot status: save the Vahini overview screenshot as `docs/images/vahini-overview.png` so it renders on GitHub.
 
 ## Current Status
 
-This repository contains a working end-to-end prototype split into three main services:
+Vahini is a working local prototype. The end-to-end judging pipeline is implemented and running locally with Docker, FastAPI, Go, React, and PostgreSQL.
 
-- `submission_engine/`: FastAPI service that accepts zipped submissions, builds Docker images, runs sandboxed containers, performs readiness/correctness checks, calls the load generator, stores results, and exposes leaderboard APIs.
-- `load_generator/`: Go HTTP load generator that sends concurrent order traffic to a submitted service and returns latency, throughput, success, failure, and status-code metrics.
-- `frontend/`: React/Vite dashboard with separate sections for package submission, contestant result tracking, and the live leaderboard.
+AWS deployment is **in progress**. The planned first deployment target is a single EC2 instance running the FastAPI submission engine, Go load generator, Docker sandbox runtime, and built React frontend, with PostgreSQL moved to Amazon RDS after local DB validation.
 
-The current demo pipeline is:
+## What It Does
 
 ```text
-Contestant submits zip + metadata
+Upload ZIP + metadata
 -> Build Docker image
 -> Run isolated correctness container
--> Health/readiness check + deterministic correctness checks
--> Restart into benchmark container
--> Go load generator sends orders
--> FastAPI calculates score
--> Leaderboard API/WebSocket updates clients
+-> Health check + deterministic correctness checks
+-> Stop correctness container
+-> Start fresh benchmark container
+-> Go bot fleet sends concurrent order traffic
+-> Collect TPS, failures, status codes, p50/p90/p99 latency
+-> Calculate composite score
+-> Persist results in PostgreSQL
+-> Stream live leaderboard over WebSocket
 ```
 
-## Implemented
+## Implemented Features
 
-- Zip upload endpoint in FastAPI.
-- Docker image build from uploaded submission source.
-- Container run with basic sandbox limits.
-- Health/readiness check before benchmarking.
-- Deterministic correctness check using order placement and `/orderbook`.
-- Separate correctness and benchmark container phases.
-- Go load generator with concurrent bot loops.
+- FastAPI submission engine for ZIP uploads and orchestration.
+- Docker-based build and container lifecycle management.
+- gVisor runtime support through `runsc` for stronger sandbox isolation.
+- CPU, memory, read-only filesystem, tmpfs, and no-new-privileges container limits.
+- Fresh container restart between correctness checking and benchmark execution.
+- Postgres-backed submission, correctness, and benchmark result persistence.
+- Deterministic correctness checks for:
+  - resting-order trade price
+  - fill quantity
+  - remaining ask state
+  - invalid order rejection
+- Go load generator for concurrent REST order traffic.
 - Metrics collection:
   - total requests
   - successes
@@ -40,27 +52,37 @@ Contestant submits zip + metadata
   - error rate
   - average/min/max latency
   - p50/p90/p99 latency
-  - HTTP status-code counts
-- Python-side composite scoring.
-- Optional contestant/team name and language metadata for submissions.
-- In-memory leaderboard.
-- `GET /leaderboard` endpoint.
-- `WS /ws/leaderboard` live leaderboard stream.
-- React/Vite console dashboard:
-  - Submit view
-  - My Results view
-  - Live Leaderboard view
-  - local recent-submission tracking
-  - WebSocket connection status
-- Configurable load generator URL, CORS origins, frontend API URL, and frontend WebSocket URL.
+  - HTTP status-code distribution
+- Composite scoring from correctness and performance metrics.
+- React/Vite dashboard branded as Vahini:
+  - Overview
+  - Submit
+  - My Results
+  - Leaderboard
+- Live leaderboard updates via FastAPI WebSockets.
+- Local recent-submission tracking in browser storage.
+- Configurable backend, frontend, CORS, DB, and load-generator URLs.
+
+## Tech Stack
+
+```text
+Frontend:          React, Vite
+Submission API:    FastAPI, asyncpg
+Load generator:    Go
+Sandboxing:        Docker, gVisor/runsc
+Database:          PostgreSQL
+Realtime:          WebSockets
+```
 
 ## Repository Layout
 
 ```text
 .
-├── frontend/              # React/Vite dashboard
+├── frontend/              # React/Vite Vahini dashboard
 ├── load_generator/        # Go load generation service
-└── submission_engine/     # FastAPI submission/sandbox/orchestration service
+├── submission_engine/     # FastAPI submission/sandbox/orchestration service
+├── stress_submissions/    # Local test ZIPs for failure-mode validation
+└── docs/images/           # README screenshots
 ```
 
 ## Local Ports
@@ -69,25 +91,20 @@ Contestant submits zip + metadata
 FastAPI submission engine: http://localhost:8000
 Go load generator:        http://localhost:8001
 React frontend:           http://localhost:5173
+PostgreSQL:               localhost:5432
 Submission containers:    random Docker host ports
 ```
 
-The frontend should call FastAPI only. FastAPI coordinates Docker containers and the Go load generator.
+The frontend talks only to FastAPI. FastAPI coordinates Docker containers, PostgreSQL, and the Go load generator.
 
 ## Configuration
 
 Submission engine environment variables:
 
 ```bash
+DATABASE_URL=postgresql://iicpc:iicpc_password@localhost:5432/iicpc
 LOAD_GENERATOR_URL=http://localhost:8001
 CORS_ORIGINS=http://localhost:5173
-```
-
-Docker Compose or service-network example:
-
-```bash
-LOAD_GENERATOR_URL=http://load-generator:8001
-CORS_ORIGINS=http://localhost:5173,http://frontend:5173
 ```
 
 Frontend environment variables:
@@ -97,55 +114,26 @@ VITE_API_BASE_URL=http://localhost:8000
 VITE_WS_URL=ws://localhost:8000/ws/leaderboard
 ```
 
-If the frontend variables are not set, the dashboard defaults to local FastAPI at `http://localhost:8000`.
-
-## Backend API
-
-Submission engine:
-
-```text
-POST /submit
-GET  /status/{submission_id}
-DELETE /status/{submission_id}
-GET  /leaderboard
-WS   /ws/leaderboard
-GET  /health
-```
-
-`POST /submit` accepts `multipart/form-data`:
-
-```text
-file: zipped submission artifact
-contestant_name: optional team/contestant label
-language: optional language label
-```
-
-Load generator:
-
-```text
-POST /benchmark
-```
-
-Expected benchmark request:
-
-```json
-{
-  "submission_id": "uuid",
-  "endpoint": "http://localhost:32768",
-  "concurrency": 100,
-  "duration_seconds": 10
-}
-```
+If frontend variables are not set, the dashboard defaults to local FastAPI at `http://localhost:8000`.
 
 ## Running Locally
 
-Prerequisites:
+Start PostgreSQL:
 
-- Docker available to the submission engine.
-- Python dependencies from `submission_engine/requirements.txt`.
-- Go installed for the load generator.
-- Node/npm installed for the Vite dashboard.
-- `runsc`/gVisor available if using the current sandbox runtime setting.
+```bash
+docker start iicpc-postgres
+```
+
+If the container does not exist yet:
+
+```bash
+docker run --name iicpc-postgres \
+  -e POSTGRES_USER=iicpc \
+  -e POSTGRES_PASSWORD=iicpc_password \
+  -e POSTGRES_DB=iicpc \
+  -p 5432:5432 \
+  -d postgres:16
+```
 
 Start the Go load generator:
 
@@ -159,7 +147,7 @@ Start the submission engine:
 ```bash
 cd submission_engine
 pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Start the frontend:
@@ -176,15 +164,90 @@ Open:
 http://localhost:5173
 ```
 
-## Frontend Dashboard
+## Database Schema
 
-The dashboard is organized so future sections can be added or removed cleanly:
+Vahini currently uses PostgreSQL tables for persistent submission and result state:
 
-- `Submit`: upload a `.zip`, enter contestant/team name, choose language, and enqueue a run.
-- `My Results`: track one selected submission, including status, score, correctness, TPS, success rate, latency, failures, and deterministic correctness checks.
-- `Leaderboard`: view live ranked benchmark results streamed from the backend WebSocket.
+```text
+submissions
+benchmark_results
+correctness_checks
+```
 
-Recent submissions are stored in browser local storage so contestants can switch between their latest local runs.
+The submission table stores:
+
+```text
+id
+filename
+contestant_name
+language
+metadata
+status
+endpoint
+error
+created_at
+updated_at
+```
+
+The benchmark results table stores:
+
+```text
+submission_id
+total_requests
+success
+failures
+tps
+error_rate
+avg_latency_ms
+p50_latency_ms
+p90_latency_ms
+p99_latency_ms
+correctness_score
+score
+status_codes
+created_at
+```
+
+The correctness table stores check-level JSON:
+
+```json
+{
+  "trade_price": true,
+  "trade_quantity": true,
+  "remaining_ask": true,
+  "invalid_order_rejected": true
+}
+```
+
+## API Surface
+
+Submission engine:
+
+```text
+POST   /submit
+GET    /status/{submission_id}
+DELETE /status/{submission_id}
+GET    /leaderboard
+WS     /ws/leaderboard
+GET    /health
+```
+
+Load generator:
+
+```text
+POST /benchmark
+```
+
+Example benchmark request:
+
+```json
+{
+  "submission_id": "uuid",
+  "endpoint": "http://localhost:32768",
+  "concurrency": 100,
+  "duration_seconds": 10
+}
+```
 
 ## Submission Contract
 
@@ -196,7 +259,7 @@ POST /order
 GET  /orderbook
 ```
 
-Current order payload shape:
+Current order payload:
 
 ```json
 {
@@ -207,7 +270,7 @@ Current order payload shape:
 }
 ```
 
-The correctness checker currently validates a simple crossing-order scenario:
+Current correctness scenario:
 
 ```text
 SELL 100 x 10
@@ -217,7 +280,7 @@ expected remaining ask: price 100, quantity 6
 invalid side should be rejected with 400 or 422
 ```
 
-Correctness scoring currently checks:
+Correctness scoring:
 
 ```text
 trade price:              40 points
@@ -226,7 +289,7 @@ remaining ask quantity:   20 points
 invalid order rejection:  10 points
 ```
 
-The benchmark score combines load-generator metrics and correctness:
+Composite score:
 
 ```text
 success score:     35%
@@ -235,57 +298,77 @@ TPS score:         20%
 correctness score: 25%
 ```
 
+## Stress Test Fixtures
+
+`stress_submissions/` contains local ZIP fixtures for validating platform behavior:
+
+```text
+good.zip
+slow.zip
+bad_status.zip
+crashing.zip
+invalid_order.zip
+matching_engine.zip
+```
+
+These are useful for checking latency degradation, incorrect behavior, invalid-order handling, and crash/failure paths.
+
+## AWS Deployment Status
+
+AWS deployment is not live yet.
+
+Planned first AWS setup:
+
+```text
+EC2:
+  - FastAPI submission engine
+  - Go load generator
+  - Docker daemon for sandboxed submissions
+  - built React frontend served by nginx or a static server
+
+RDS PostgreSQL:
+  - submissions
+  - benchmark_results
+  - correctness_checks
+```
+
+Deployment considerations before going live:
+
+- Confirm gVisor/runsc availability on the EC2 host, or provide a Docker runtime fallback.
+- Replace hard-coded localhost assumptions if services are split across machines.
+- Configure security groups for frontend/API access and private DB connectivity.
+- Move secrets and DB URLs into environment variables.
+- Add container/image cleanup policies.
+- Add log collection for failed submissions and benchmark runs.
+
 ## Current Limitations
 
-- Leaderboard storage is in memory, so results are lost when the FastAPI process restarts.
-- Docker sandboxing is a prototype and should be hardened before running untrusted code.
-- The load generator is currently a single Go service, not yet a distributed fleet.
-- No persistent metrics database yet.
-- No message/event pipeline yet.
-- Contestant identity is lightweight metadata only; there is no authentication/user system yet.
-- Recent submissions in the frontend are local to one browser.
+- The load generator is a single Go service, not yet a distributed fleet.
+- REST order traffic is implemented; FIX and WebSocket adapters are planned but not built.
+- Only limit-order traffic is currently generated during benchmark runs.
+- Authentication and team/user management are not implemented.
+- Sandbox hardening is prototype-level and should be reviewed before accepting truly untrusted public code.
+- No object storage yet for uploaded artifacts.
+- No Redpanda/Kafka or ClickHouse yet; these remain scale-up options.
 
-## Near-Term Plan
+## Future Work
 
-1. Improve correctness checking:
-   - use multiple deterministic test cases
-   - add stricter validation for price-time priority
-   - report richer check-level failure messages
-2. Improve sandboxing:
-   - container timeout and cleanup
-   - PID/file-descriptor limits
-   - stricter CPU and memory controls
-   - safer network assumptions
-3. Add Docker Compose for local startup.
-4. Add persistent storage:
-   - submissions
-   - contestant/team records
-   - leaderboard results
-   - benchmark artifacts
-5. Add architecture document covering:
-   - services
-   - data flow
-   - scoring model
-   - sandboxing strategy
-   - scale-up design
-
-## Future Scale-Up Plan
-
-For the hackathon prototype, FastAPI memory is enough to prove the complete pipeline. For a production-grade distributed design:
-
-- Redpanda/Kafka for benchmark metric events.
-- ClickHouse for high-volume analytical queries.
-- Redis for live leaderboard cache/pub-sub.
-- Kubernetes jobs/pods for distributed bot fleets.
-- Object storage for uploaded submissions and benchmark artifacts.
-- Postgres for submission metadata and user/team records.
+- Add Docker Compose for local one-command startup.
+- Add Go and Rust submission auto-detection.
+- Add market orders, cancels, and mixed traffic profiles.
+- Add richer correctness cases for price-time priority.
+- Add benchmark profiles configurable from the frontend.
+- Add AWS deployment scripts or Terraform.
+- Add Redpanda/Kafka for benchmark metric events.
+- Add ClickHouse for high-volume analytical queries.
+- Add S3-compatible storage for submitted artifacts.
 
 ## Hackathon Goal
 
-The main objective is to demonstrate a complete, understandable, high-signal pipeline:
+Vahini prioritizes a complete, explainable systems pipeline:
 
 ```text
-Code Upload -> Containerized Deployment -> Correctness Check -> Load Test -> Scoring -> Live Leaderboard
+Code Upload -> Containerized Deployment -> Correctness Check -> Load Test -> Scoring -> Persistent Leaderboard
 ```
 
-The current architecture intentionally prioritizes an end-to-end working prototype first, with clear upgrade paths for distributed systems components.
+The current architecture is intentionally practical: a working end-to-end prototype first, with clear upgrade paths toward a distributed benchmarking platform.

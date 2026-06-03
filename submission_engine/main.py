@@ -1,8 +1,12 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import aiofiles
 import asyncio
+import asyncpg
+from contextlib import asynccontextmanager
+import json
 import uuid
 import os
 from sandbox import SandboxManager
@@ -18,7 +22,164 @@ LOAD_GENERATOR_URL = os.getenv(
     "http://localhost:8001"
 )
 
-app = FastAPI()
+DATABASE_URL= os.getenv(
+    "DATABASE_URL",
+    "postgresql://iicpc:iicpc_password@localhost:5432/iicpc"
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.db=await asyncpg.create_pool(DATABASE_URL)
+    print("Database pool opened successfully.")
+
+    yield
+
+    await app.state.db.close()
+    print("Database pool closed cleanly.")
+
+app = FastAPI(lifespan=lifespan)
+async def db_create_submission(submission_id, filename, contestant_name, language, metadata):
+    async with app.state.db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO submissions (id, filename, status, contestant_name, language, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            """,
+            submission_id,
+            filename,
+            "building",
+            contestant_name,
+            language,
+            json.dumps(metadata),
+        )
+
+async def db_update_submission_status(submission_id, status, error=None, endpoint=None):
+    async with app.state.db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE submissions
+            SET status =$1,
+                error=$2,
+                endpoint=COALESCE($3, endpoint),
+                updated_at= now()
+            WHERE id=$4
+            """,
+            status, error, endpoint, submission_id
+        )
+
+async def db_insert_correctness(submission_id, checks):
+    async with app.state.db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO correctness_checks (submission_id, checks)
+            VALUES ($1, $2::jsonb)
+            """,
+            submission_id,
+            json.dumps(checks)
+        )
+
+async def db_insert_benchmark_result(submission_id, result):
+    async with app.state.db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO benchmark_results (
+                submission_id,
+                total_requests,
+                success,
+                failures,
+                tps,
+                error_rate,
+                avg_latency_ms,
+                p50_latency_ms,
+                p90_latency_ms,
+                p99_latency_ms,
+                correctness_score,
+                score,
+                status_codes
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10, $11, $12, $13::jsonb
+            )
+            """,
+            submission_id,
+            result.get("total_requests", 0),
+            result.get("success", 0),
+            result.get("failures", 0),
+            result.get("tps", 0),
+            result.get("error_rate", 100),
+            result.get("avg_latency_ms", 0),
+            result.get("p50_latency_ms", 0),
+            result.get("p90_latency_ms", 0),
+            result.get("p99_latency_ms", 0),
+            result.get("correctness_score", 0),
+            result.get("score", 0),
+            json.dumps(result.get("status_codes", {}))
+        )
+
+async def db_get_submission(submission_id):
+    async with app.state.db.acquire() as conn:
+        row=await conn.fetchrow(
+            """
+            SELECT
+                id,
+                filename,
+                contestant_name,
+                language,
+                metadata,
+                status,
+                endpoint,
+                error,
+                created_at,
+                updated_at
+            FROM submissions
+            WHERE id=$1
+            """,
+            submission_id
+        )
+    return jsonable_encoder(dict(row)) if row else None
+
+async def db_get_leaderboard():
+    async with app.state.db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                br.submission_id,
+                s.filename,
+                s.contestant_name,
+                s.language,
+                s.metadata,
+                br.total_requests,
+                br.success,
+                br.failures,
+                br.tps,
+                br.error_rate,
+                br.avg_latency_ms,
+                br.p50_latency_ms,
+                br.p90_latency_ms,
+                br.p99_latency_ms,
+                br.correctness_score,
+                br.score,
+                br.status_codes,
+                cc.checks AS correctness_checks,
+                br.created_at
+            FROM benchmark_results br
+            JOIN submissions s ON s.id = br.submission_id
+            LEFT JOIN LATERAL (
+                SELECT checks
+                FROM correctness_checks
+                WHERE submission_id = br.submission_id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) cc ON true
+            ORDER BY br.score DESC
+            LIMIT 100
+            """
+        )
+
+    return jsonable_encoder([dict(row) for row in rows])
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,7 +189,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 sandbox=SandboxManager()
-leaderboard={}
+
 websocket_clients=set()
 
 SUBMISSION_DIR = "/tmp/iicpc_submissions"
@@ -37,6 +198,7 @@ os.makedirs(SUBMISSION_DIR, exist_ok=True)
 async def background_deploy(submission_id, zip_path, metadata):
     try:
         image_tag = await sandbox.build(submission_id, zip_path)
+        await db_update_submission_status(submission_id, "starting_correctness")
         sandbox.containers[submission_id]["status"] = "starting_correctness"
 
         async with httpx.AsyncClient() as client:
@@ -46,11 +208,14 @@ async def background_deploy(submission_id, zip_path, metadata):
                 purpose="correctness",
             )
             sandbox.containers[submission_id]["status"] = "checking_correctness"
+            await db_update_submission_status(submission_id, "checking_correctness", endpoint=correctness_endpoint)
 
             await wait_for_health(client, correctness_endpoint)
             correctness_score = await run_correctness_check(client, correctness_endpoint)
 
+            await db_insert_correctness(submission_id, correctness_score["checks"])
             sandbox.containers[submission_id]["status"] = "restarting_for_benchmark"
+            await db_update_submission_status(submission_id, "restarting_for_benchmark")
             await asyncio.to_thread(sandbox.stop_container, submission_id)
 
             benchmark_endpoint = await sandbox.run(
@@ -59,6 +224,7 @@ async def background_deploy(submission_id, zip_path, metadata):
                 purpose="benchmark",
             )
             sandbox.containers[submission_id]["status"] = "starting_benchmark"
+            await db_update_submission_status(submission_id, "starting_benchmark", endpoint=benchmark_endpoint)
             await wait_for_health(client, benchmark_endpoint)
 
             go_payload={
@@ -68,6 +234,7 @@ async def background_deploy(submission_id, zip_path, metadata):
                 "duration_seconds": 10      # Storm target for 15 seconds
             }
             sandbox.containers[submission_id]["status"]="benchmarking"
+            await db_update_submission_status(submission_id, "benchmarking", endpoint=benchmark_endpoint)
             response=await client.post(
                 f"{LOAD_GENERATOR_URL}/benchmark",
                 json=go_payload,
@@ -82,18 +249,24 @@ async def background_deploy(submission_id, zip_path, metadata):
                 result["correctness_score"] = correctness_score["score"]
                 result["correctness_checks"]= correctness_score["checks"]
                 result["score"] = calculate_score(result, correctness_score["score"])
-                leaderboard[submission_id]=result
+                await db_insert_benchmark_result(submission_id, result)
+                await db_update_submission_status(submission_id, "completed")
                 sandbox.containers[submission_id]["status"]="completed"
                 sandbox.containers[submission_id]["result"]=result
-                await broadcast_leaderboard()
+                try:
+                    await broadcast_leaderboard()
+                except Exception as broadcast_error:
+                    print(f"[{submission_id}] Leaderboard broadcast failed: {broadcast_error}")
             else:
                 print(f"[{submission_id}] Go load generator rejected request: {response.text}")
                 sandbox.containers[submission_id]["status"] = "failed_handoff"
+                await db_update_submission_status(submission_id, "failed_handoff", error=response.text)
 
 
 
     except Exception as e:
         print(f"[{submission_id}] Deployment failed: {str(e)}")
+        await db_update_submission_status(submission_id,"failed", error=str(e))
         existing_data = sandbox.containers.get(submission_id, {})
         existing_data.update({"status": "failed", "error": str(e)})
         sandbox.containers[submission_id] = existing_data
@@ -118,16 +291,29 @@ async def submit_code(
         while chunk := await file.read(1024* 1024):
             await f.write(chunk)
     metadata = {
-        "contestant_name": contestant_name.strip() or "Anonymous",
-        "language": language.strip() or "Unspecified",
+        "original_filename": file.filename,
     }
-
-    sandbox.containers[submission_id]={"status": "building", **metadata}
-    background_tasks.add_task(background_deploy, submission_id, zip_path, metadata)
+    contestant_name = contestant_name.strip() or "Anonymous"
+    language = language.strip() or "Unspecified"
+    await db_create_submission(
+        submission_id,
+        file.filename,
+        contestant_name,
+        language,
+        metadata,
+    )
+    sandbox.containers[submission_id]={"status": "building", "contestant_name": contestant_name, "language": language, **metadata}
+    background_tasks.add_task(background_deploy, submission_id, zip_path, {
+        "contestant_name": contestant_name,
+        "language": language,
+        **metadata,
+    })
 
     # 5. Instantly return a success response to the client
     return JSONResponse({
         "submission_id": submission_id,
+        "contestant_name": contestant_name,
+        "language": language,
         **metadata,
         "status": "queued",
         "message": "Your code is being extracted and built."
@@ -136,16 +322,19 @@ async def submit_code(
     
 @app.get("/status/{submission_id}")
 async def get_status(submission_id: str):
-    status=sandbox.get_status(submission_id)
-    if not status:
-        raise HTTPException(404,"submission not found")
-    return status
+    db_status=await db_get_submission(submission_id)
+    docker_status=sandbox.get_status(submission_id)
+    if not db_status: raise HTTPException(404, "submission not found")
+    return{
+        **db_status, "docker": docker_status
+    }
 
 @app.delete("/status/{submission_id}")
 async def stop_submission(submission_id : str):
     sandbox.stop_container(submission_id)
     if submission_id in sandbox.containers:
         sandbox.containers[submission_id]["status"] = "stopped"
+    await db_update_submission_status(submission_id, "stopped")
     return {"message": f"Submission {submission_id} stopped"}
 
 @app.get("/health")
@@ -157,11 +346,7 @@ async def health():
 # normal API for fetching leaderboard manually
 @app.get("/leaderboard")
 async def get_leaderboard():
-    return sorted(
-        leaderboard.values(), 
-        key=lambda x: x.get("score",0),
-        reverse=True
-    )
+    return await db_get_leaderboard()
 
 
 # sends latest leaderboard to every connected frontend

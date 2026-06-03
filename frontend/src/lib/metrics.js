@@ -20,8 +20,15 @@ function shortId(id) {
   return id.length > 12 ? `${id.slice(0, 8)}...${id.slice(-4)}` : id;
 }
 
-function getResult(status) {
-  return status?.result || null;
+function getResult(status, leaderboard = [], submissionId = null) {
+  const leaderboardResult = submissionId
+    ? leaderboard.find((row) => String(row.submission_id) === String(submissionId))
+    : null;
+
+  if (leaderboardResult?.correctness_checks) return leaderboardResult;
+  if (status?.result) return status.result;
+  if (status?.docker?.result) return status.docker.result;
+  return leaderboardResult || null;
 }
 
 export { formatNumber, formatPercent, getResult, shortId, successRate };

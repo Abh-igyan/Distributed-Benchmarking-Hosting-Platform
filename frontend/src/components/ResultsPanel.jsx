@@ -8,9 +8,23 @@ const CHECK_LABELS = {
   invalid_order_rejected: "Invalid order rejected",
 };
 
-function ResultsPanel({ currentSubmission, recentSubmissions, status, onSelectSubmission }) {
-  const result = getResult(status);
-  const checks = result?.correctness_checks || {};
+function ResultsPanel({
+  currentSubmission,
+  leaderboard,
+  recentSubmissions,
+  status,
+  onSelectSubmission,
+}) {
+  const result = getResult(status, leaderboard, currentSubmission?.submission_id);
+  let checks = result?.correctness_checks || {};
+
+  if (typeof checks === "string") {
+    try {
+      checks = JSON.parse(checks);
+    } catch {
+      checks = {};
+    }
+  }
 
   return (
     <section className="content-section">

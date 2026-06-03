@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 import AppShell from "./components/AppShell";
 import LeaderboardTable from "./components/LeaderboardTable";
+import OverviewPanel from "./components/OverviewPanel";
 import ResultsPanel from "./components/ResultsPanel";
 import SubmitPanel from "./components/SubmitPanel";
 import { API_BASE, WS_URL } from "./lib/config";
@@ -17,7 +18,7 @@ function readRecentSubmissions() {
 }
 
 function App() {
-  const [activeView, setActiveView] = useState("submit");
+  const [activeView, setActiveView] = useState("overview");
   const [connectionState, setConnectionState] = useState("offline");
   const [currentSubmission, setCurrentSubmission] = useState(null);
   const [error, setError] = useState("");
@@ -106,6 +107,13 @@ function App() {
     setActiveView("results");
   }
 
+  async function fetchLeaderboard() {
+    const response = await fetch(`${API_BASE}/leaderboard`);
+    if (!response.ok) return;
+    const data = await response.json();
+    setLeaderboard(data);
+  }
+
   useEffect(() => {
     if (!currentSubmissionId) return undefined;
 
@@ -116,7 +124,12 @@ function App() {
         const response = await fetch(`${API_BASE}/status/${currentSubmissionId}`);
         if (!response.ok) return;
         const data = await response.json();
-        if (!cancelled) setStatus(data);
+        if (!cancelled) {
+          setStatus(data);
+          if (["completed", "failed", "failed_handoff", "stopped"].includes(data.status)) {
+            fetchLeaderboard();
+          }
+        }
       } catch {
         if (!cancelled) {
           setStatus((current) => ({
@@ -135,6 +148,10 @@ function App() {
       window.clearInterval(timer);
     };
   }, [currentSubmissionId]);
+
+  useEffect(() => {
+    fetchLeaderboard();
+  }, []);
 
   useEffect(() => {
     let ws;
@@ -169,6 +186,10 @@ function App() {
       onViewChange={setActiveView}
       submissionCount={recentSubmissions.length}
     >
+      {activeView === "overview" ? (
+        <OverviewPanel onStart={() => setActiveView("submit")} />
+      ) : null}
+
       {activeView === "submit" ? (
         <SubmitPanel
           error={error}
@@ -184,6 +205,7 @@ function App() {
       {activeView === "results" ? (
         <ResultsPanel
           currentSubmission={currentSubmission}
+          leaderboard={sortedLeaderboard}
           onSelectSubmission={selectSubmission}
           recentSubmissions={recentSubmissions}
           status={status}

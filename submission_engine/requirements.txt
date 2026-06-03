@@ -3,3 +3,5 @@ uvicorn[standard]
 docker
 python-multipart
 aiofiles
+asyncpg
+httpx
