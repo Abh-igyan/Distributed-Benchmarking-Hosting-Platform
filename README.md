@@ -4,9 +4,7 @@ Vahini is a benchmarking and hosting platform for evaluating contestant-submitte
 
 The name **Vahini** means "flowing" or "stream" in Hindi and Sanskrit, reflecting the platform's focus on continuous order flow, pressure testing, and live benchmark visibility.
 
-![Vahini overview dashboard](docs/images/vahini-overview.png)
-
-> Screenshot status: save the Vahini overview screenshot as `docs/images/vahini-overview.png` so it renders on GitHub.
+![Vahini overview dashboard](docs/images/img.png)
 
 ## Current Status
 

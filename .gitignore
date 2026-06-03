@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+.vscode/
 
 submission_engine/AbhiDev.venv/
 submission_engine/submissions/
