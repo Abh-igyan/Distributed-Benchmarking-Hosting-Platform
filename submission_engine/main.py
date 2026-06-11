@@ -230,7 +230,7 @@ async def background_deploy(submission_id, zip_path, metadata):
             go_payload={
                 "submission_id": submission_id,
                 "endpoint": benchmark_endpoint,
-                "concurrency": 100,         # Dynamically spin up 100 bot loops
+                "concurrency": 500,         # Dynamically spin up 100 bot loops
                 "duration_seconds": 10      # Storm target for 15 seconds
             }
             sandbox.containers[submission_id]["status"]="benchmarking"
@@ -582,8 +582,7 @@ def calculate_score(result, correctness_score):
     tps_score = min(100, tps / 100)
 
     return (
-        success_score * 0.35 +
-        latency_score * 0.20 +
-        tps_score * 0.20 +
-        correctness_score * 0.25
-    )
+        success_score * 0.45 +
+        latency_score * 0.25 +
+        tps_score * 0.30
+    )*(correctness_score / 100)

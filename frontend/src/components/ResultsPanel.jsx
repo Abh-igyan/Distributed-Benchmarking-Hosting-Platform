@@ -2,10 +2,15 @@ import StatusBadge from "./StatusBadge";
 import { formatNumber, formatPercent, getResult, shortId, successRate } from "../lib/metrics";
 
 const CHECK_LABELS = {
-  trade_price: "Trade price",
-  trade_quantity: "Trade quantity",
-  remaining_ask: "Remaining ask",
-  invalid_order_rejected: "Invalid order rejected",
+  empty_book: "Empty book",
+  duplicate_orders: "Duplicate orders",
+  invalid_side: "Invalid side",
+  market_order_execution: "Market order execution",
+  price_time_priority: "Price time priority",
+  multiple_fills: "Multiple fills",
+  partial_fills: "Partial fills",
+  cancellation: "Cancellation",
+  remaining_quantity: "Remaining quantity",
 };
 
 function ResultsPanel({
@@ -35,6 +40,13 @@ function ResultsPanel({
         </div>
         <StatusBadge status={status?.status} />
       </div>
+
+      {status?.error && (
+        <div className="error-banner">
+          <h4>Submission Error</h4>
+          <pre>{status.error}</pre>
+        </div>
+      )}
 
       <div className="results-layout">
         <div className="result-summary">
@@ -92,14 +104,38 @@ function ResultsPanel({
         <aside className="side-panel">
           <h4>Correctness checks</h4>
           <ul className="check-list">
-            {Object.entries(CHECK_LABELS).map(([key, label]) => (
-              <li key={key}>
-                <span>{label}</span>
-                <strong className={checks[key] ? "check-pass" : "check-wait"}>
-                  {checks[key] ? "Pass" : "Pending"}
-                </strong>
+            {Object.entries(CHECK_LABELS).map(([key, label]) => {
+              const hasCheck = key in checks;
+              let checkStatus = "Pending";
+              let checkClass = "check-wait";
+              if (hasCheck) {
+                if (checks[key]) {
+                  checkStatus = "Pass";
+                  checkClass = "check-pass";
+                } else {
+                  checkStatus = "Fail";
+                  checkClass = "check-fail";
+                }
+              }
+              return (
+                <li key={key}>
+                  <span>{label}</span>
+                  <strong className={checkClass}>{checkStatus}</strong>
+                </li>
+              );
+            })}
+            {checks.book_fetch_failed && (
+              <li key="book_fetch_failed">
+                <span>Book fetch</span>
+                <strong className="check-fail">Fail</strong>
               </li>
-            ))}
+            )}
+            {checks.exception_raised && (
+              <li key="exception_raised">
+                <span>Exception</span>
+                <strong className="check-fail">Fail</strong>
+              </li>
+            )}
           </ul>
         </aside>
       </div>

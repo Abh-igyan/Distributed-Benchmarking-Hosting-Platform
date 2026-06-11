@@ -8,9 +8,7 @@ The name **Vahini** means "flowing" or "stream" in Hindi and Sanskrit, reflectin
 
 ## Current Status
 
-Vahini is a working local prototype. The end-to-end judging pipeline is implemented and running locally with Docker, FastAPI, Go, React, and PostgreSQL.
-
-AWS deployment is **in progress**. The planned first deployment target is a single EC2 instance running the FastAPI submission engine, Go load generator, Docker sandbox runtime, and built React frontend, with PostgreSQL moved to Amazon RDS after local DB validation.
+Vahini is fully operational and deployed on AWS EC2. The EC2 instance hosts the FastAPI submission engine, Go load generator, Docker sandbox runtime, and the built React frontend. The platform uses an Amazon RDS PostgreSQL database for reliable, persistent storage of submissions, correctness checks, and benchmark results.
 
 ## What It Does
 
@@ -68,8 +66,9 @@ Frontend:          React, Vite
 Submission API:    FastAPI, asyncpg
 Load generator:    Go
 Sandboxing:        Docker, gVisor/runsc
-Database:          PostgreSQL
+Database:          Amazon RDS PostgreSQL
 Realtime:          WebSockets
+Infrastructure:    AWS EC2
 ```
 
 ## Repository Layout
@@ -311,34 +310,6 @@ matching_engine.zip
 
 These are useful for checking latency degradation, incorrect behavior, invalid-order handling, and crash/failure paths.
 
-## AWS Deployment Status
-
-AWS deployment is not live yet.
-
-Planned first AWS setup:
-
-```text
-EC2:
-  - FastAPI submission engine
-  - Go load generator
-  - Docker daemon for sandboxed submissions
-  - built React frontend served by nginx or a static server
-
-RDS PostgreSQL:
-  - submissions
-  - benchmark_results
-  - correctness_checks
-```
-
-Deployment considerations before going live:
-
-- Confirm gVisor/runsc availability on the EC2 host, or provide a Docker runtime fallback.
-- Replace hard-coded localhost assumptions if services are split across machines.
-- Configure security groups for frontend/API access and private DB connectivity.
-- Move secrets and DB URLs into environment variables.
-- Add container/image cleanup policies.
-- Add log collection for failed submissions and benchmark runs.
-
 ## Current Limitations
 
 - The load generator is a single Go service, not yet a distributed fleet.
@@ -360,13 +331,3 @@ Deployment considerations before going live:
 - Add Redpanda/Kafka for benchmark metric events.
 - Add ClickHouse for high-volume analytical queries.
 - Add S3-compatible storage for submitted artifacts.
-
-## Hackathon Goal
-
-Vahini prioritizes a complete, explainable systems pipeline:
-
-```text
-Code Upload -> Containerized Deployment -> Correctness Check -> Load Test -> Scoring -> Persistent Leaderboard
-```
-
-The current architecture is intentionally practical: a working end-to-end prototype first, with clear upgrade paths toward a distributed benchmarking platform.

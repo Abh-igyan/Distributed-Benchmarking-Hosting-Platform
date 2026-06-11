@@ -465,8 +465,34 @@
   color: var(--success);
 }
 
+.check-fail {
+  color: var(--danger);
+}
+
 .check-wait {
   color: var(--faint);
+}
+
+.error-banner {
+  background: var(--danger-soft);
+  color: var(--danger);
+  padding: 16px;
+  border-radius: 8px;
+  margin: 0 22px 24px;
+}
+
+.error-banner h4 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  color: var(--danger);
+}
+
+.error-banner pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: inherit;
+  font-size: 14px;
 }
 
 .recent-panel {
