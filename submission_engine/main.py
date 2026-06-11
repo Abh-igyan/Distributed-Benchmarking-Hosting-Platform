@@ -378,81 +378,187 @@ async def leaderboard_ws(websocket : WebSocket):
 
 async def run_correctness_check(client, endpoint):
     try:
-        # Place resting sell order
-        r1 = await client.post(
+        score = 0.0
+        checks = {}
+
+        r_empty = await client.get(endpoint + "/orderbook", timeout=5)
+        if r_empty.status_code == 200:
+            empty_book = r_empty.json()
+            checks["empty_book"] = (
+                len(empty_book.get("bids", [])) == 0
+                and len(empty_book.get("asks", [])) == 0
+            )
+        else:
+            checks["empty_book"] = False
+
+        duplicate_id = str(uuid.uuid4())
+        first_duplicate = await client.post(
             endpoint + "/order",
             json={
+                "order_id": duplicate_id,
                 "order_type": "LIMIT",
                 "side": "SELL",
-                "price": 100,
-                "quantity": 10
+                "price": 500,
+                "quantity": 1,
             },
-            timeout=5
+            timeout=5,
         )
-
-        # Place crossing buy order
-        r2 = await client.post(
+        second_duplicate = await client.post(
             endpoint + "/order",
             json={
+                "order_id": duplicate_id,
                 "order_type": "LIMIT",
-                "side": "BUY",
-                "price": 105,
-                "quantity": 4
+                "side": "SELL",
+                "price": 500,
+                "quantity": 1,
             },
-            timeout=5
+            timeout=5,
         )
-        invalid_order=await client.post(
-            endpoint+"/order",
+        checks["duplicate_orders"] = (
+            first_duplicate.status_code in (200, 201)
+            and second_duplicate.status_code in (400, 409, 422)
+        )
+        await client.delete(f"{endpoint}/order/{duplicate_id}", timeout=5)
+
+        invalid_order = await client.post(
+            endpoint + "/order",
             json={
+                "order_id": str(uuid.uuid4()),
                 "order_type": "LIMIT",
                 "side": "NOPE",
                 "price": 99,
-                "quantity": 1
+                "quantity": 1,
             },
-            timeout=5
+            timeout=5,
+        )
+        checks["invalid_side"] = invalid_order.status_code in (400, 422)
+
+        ask_105 = str(uuid.uuid4())
+        ask_100_first = str(uuid.uuid4())
+        ask_100_second = str(uuid.uuid4())
+        setup_orders = [
+            {
+                "order_id": ask_105,
+                "order_type": "LIMIT",
+                "side": "SELL",
+                "price": 105,
+                "quantity": 10,
+            },
+            {
+                "order_id": ask_100_first,
+                "order_type": "LIMIT",
+                "side": "SELL",
+                "price": 100,
+                "quantity": 5,
+            },
+            {
+                "order_id": ask_100_second,
+                "order_type": "LIMIT",
+                "side": "SELL",
+                "price": 100,
+                "quantity": 5,
+            },
+        ]
+        setup_responses = []
+        for order in setup_orders:
+            setup_responses.append(
+                await client.post(endpoint + "/order", json=order, timeout=5)
+            )
+        setup_ok = all(resp.status_code in (200, 201) for resp in setup_responses)
+
+        market_order = await client.post(
+            endpoint + "/order",
+            json={
+                "order_id": str(uuid.uuid4()),
+                "order_type": "MARKET",
+                "side": "BUY",
+                "quantity": 12,
+            },
+            timeout=5,
+        )
+        checks["market_order_execution"] = setup_ok and market_order.status_code in (200, 201)
+
+        cancel_id = str(uuid.uuid4())
+        cancel_seed = await client.post(
+            endpoint + "/order",
+            json={
+                "order_id": cancel_id,
+                "order_type": "LIMIT",
+                "side": "SELL",
+                "price": 110,
+                "quantity": 10,
+            },
+            timeout=5,
+        )
+        cancel_response = await client.delete(f"{endpoint}/order/{cancel_id}", timeout=5)
+        checks["cancellation"] = (
+            cancel_seed.status_code in (200, 201)
+            and cancel_response.status_code in (200, 202, 204)
         )
 
-        # Inspect orderbook
-        r3 = await client.get(endpoint + "/orderbook", timeout=5)
-        if r1.status_code not in (200, 201) or r2.status_code not in (200, 201) or r3.status_code != 200:
+        r_book = await client.get(endpoint + "/orderbook", timeout=5)
+        if r_book.status_code != 200:
             return {
                 "score": 0.0,
-                "checks": {},
+                "checks": {**checks, "book_fetch_failed": True},
             }
 
-        book = r3.json()
+        book = r_book.json()
         asks = book.get("asks", [])
         trades = book.get("trades", [])
+        recent_trades = trades[-3:] if len(trades) >= 3 else []
 
-        score = 0.0
+        checks["price_time_priority"] = (
+            len(recent_trades) == 3
+            and recent_trades[0].get("price") == 100
+            and recent_trades[1].get("price") == 100
+            and recent_trades[2].get("price") == 105
+        )
+        checks["multiple_fills"] = (
+            len(recent_trades) == 3
+            and recent_trades[0].get("quantity") == 5
+            and recent_trades[1].get("quantity") == 5
+            and recent_trades[2].get("quantity") == 2
+        )
 
-        # Expected: buy should match against sell at resting sell price 100
-        if trades and trades[-1].get("price") == 100:
-            score += 40
+        remaining_at_105 = sum(
+            order.get("quantity", 0)
+            for order in asks
+            if order.get("price") == 105
+        )
+        remaining_at_110 = sum(
+            order.get("quantity", 0)
+            for order in asks
+            if order.get("price") == 110
+        )
+        checks["partial_fills"] = remaining_at_105 == 8
+        checks["remaining_quantity"] = remaining_at_105 == 8
+        checks["cancellation"] = checks["cancellation"] and remaining_at_110 == 0
 
-        if trades and trades[-1].get("quantity") == 4:
-            score += 30
-
-        # Expected remaining ask: 6 quantity at price 100
-        if asks and asks[0].get("price") == 100 and asks[0].get("quantity") == 6:
-            score += 20
-        if invalid_order.status_code in (400,422):
-            score+=10
+        weights = {
+            "empty_book": 10,
+            "duplicate_orders": 10,
+            "invalid_side": 10,
+            "market_order_execution": 10,
+            "price_time_priority": 20,
+            "multiple_fills": 10,
+            "partial_fills": 10,
+            "cancellation": 10,
+            "remaining_quantity": 10,
+        }
+        for name, weight in weights.items():
+            if checks.get(name):
+                score += weight
 
         return {
             "score": score,
-            "checks": {
-                "trade_price": trades and trades[-1].get("price") == 100,
-                "trade_quantity": trades and trades[-1].get("quantity") == 4,
-                "remaining_ask": asks and asks[0].get("price") == 100 and asks[0].get("quantity") == 6,
-                "invalid_order_rejected": invalid_order.status_code in (400,422)
-            }
+            "checks": checks,
         }
 
-    except Exception:
+    except Exception as e:
         return {
             "score": 0.0,
-            "checks": {},
+            "checks": {"exception_raised": str(e)},
         }
 
 async def wait_for_health(client, endpoint):
@@ -472,7 +578,7 @@ def calculate_score(result, correctness_score):
     tps = result.get("tps", 0)
 
     success_score = max(0, 100 - error_rate)
-    latency_score = max(0, 100 - p99)
+    latency_score = 100/(1+p99/100)
     tps_score = min(100, tps / 100)
 
     return (

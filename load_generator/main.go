@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,19 +26,20 @@ type BenchmarkRequest struct {
 }
 
 type BenchmarkResult struct {
-	SubmissionID string         `json:"submission_id"`
-	Total        uint64         `json:"total_requests"`
-	Success      uint64         `json:"success"`
-	Failures     uint64         `json:"failures"`
-	TPS          float64        `json:"tps"`
-	ErrorRate    float64        `json:"error_rate"`
-	AvgLatencyMs float64        `json:"avg_latency_ms"`
-	MinLatencyMs float64        `json:"min_latency_ms"`
-	MaxLatencyMs float64        `json:"max_latency_ms"`
-	P50LatencyMs float64        `json:"p50_latency_ms"`
-	P90LatencyMs float64        `json:"p90_latency_ms"`
-	P99LatencyMs float64        `json:"p99_latency_ms"`
-	StatusCodes  map[int]uint64 `json:"status_codes"`
+	SubmissionID string            `json:"submission_id"`
+	Total        uint64            `json:"total_requests"`
+	Success      uint64            `json:"success"`
+	Failures     uint64            `json:"failures"`
+	TPS          float64           `json:"tps"`
+	ErrorRate    float64           `json:"error_rate"`
+	AvgLatencyMs float64           `json:"avg_latency_ms"`
+	MinLatencyMs float64           `json:"min_latency_ms"`
+	MaxLatencyMs float64           `json:"max_latency_ms"`
+	P50LatencyMs float64           `json:"p50_latency_ms"`
+	P90LatencyMs float64           `json:"p90_latency_ms"`
+	P99LatencyMs float64           `json:"p99_latency_ms"`
+	StatusCodes  map[int]uint64    `json:"status_codes"`
+	ErrorTypes   map[string]uint64 `json:"error_types"`
 }
 
 // Global, optimized HTTP client. Reuses TCP handshakes .
@@ -53,6 +57,11 @@ func main() {
 	http.HandleFunc("/benchmark", handleBenchmark)
 	log.Println("Go Load Generator listening on :8001...")
 	log.Fatal(http.ListenAndServe(":8001", nil))
+}
+
+func incrementError(m *sync.Map, key string) {
+	value, _ := m.LoadOrStore(key, new(uint64))
+	atomic.AddUint64(value.(*uint64), 1)
 }
 
 func handleBenchmark(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +110,7 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 
 	latencyChan := make(chan int64, 100000)
 	statusCodes := sync.Map{}
+	errorCounts := sync.Map{}
 
 	var latencies []int64
 
@@ -137,6 +147,7 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 					req, err := http.NewRequestWithContext(ctx, "POST", endpoint+"/order", bytes.NewBuffer(orderPayload))
 					if err != nil {
 						log.Println("Request failed:", err)
+						incrementError(&errorCounts, "request_creation_failed")
 						atomic.AddUint64(&failCount, 1)
 						continue
 					}
@@ -151,8 +162,16 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 					default:
 					}
 					if err != nil {
-						if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+						if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 							return
+						}
+						var netErr net.Error
+						if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+							incrementError(&errorCounts, "timeout")
+						} else if strings.Contains(err.Error(), "connection refused") {
+							incrementError(&errorCounts, "connection_refused")
+						} else {
+							incrementError(&errorCounts, "network_error")
 						}
 						log.Println("Request failed:", err)
 						atomic.AddUint64(&failCount, 1)
@@ -170,6 +189,14 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 					} else {
 						_, _ = io.Copy(io.Discard, resp.Body)
 						resp.Body.Close()
+
+						if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+							incrementError(&errorCounts, fmt.Sprintf("http_%d", resp.StatusCode))
+						} else if resp.StatusCode >= 500 {
+							incrementError(&errorCounts, fmt.Sprintf("http_%d", resp.StatusCode))
+						} else {
+							incrementError(&errorCounts, "unexpected_status")
+						}
 
 						if atomic.LoadUint64(&failCount) < 10 {
 							log.Printf("Bad response | status=%d", resp.StatusCode)
@@ -223,6 +250,13 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 		statusCodeMap[key.(int)] = atomic.LoadUint64(value.(*uint64))
 		return true
 	})
+
+	errorTypeMap := make(map[string]uint64)
+	errorCounts.Range(func(key, value any) bool {
+		errorTypeMap[key.(string)] = atomic.LoadUint64(value.(*uint64))
+		return true
+	})
+
 	result := BenchmarkResult{
 		SubmissionID: subID,
 		Total:        totalRequests,
@@ -237,6 +271,7 @@ func startStressTest(subID, endpoint string, concurrency int, duration time.Dura
 		P90LatencyMs: percentile(latencies, 0.90),
 		P99LatencyMs: percentile(latencies, 0.99),
 		StatusCodes:  statusCodeMap,
+		ErrorTypes:   errorTypeMap,
 	}
 
 	pretty, _ := json.MarshalIndent(result, "", "  ")
