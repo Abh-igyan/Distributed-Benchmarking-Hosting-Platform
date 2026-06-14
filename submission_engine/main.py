@@ -239,7 +239,7 @@ async def background_deploy(submission_id, zip_path, metadata):
             await wait_for_health(client, benchmark_endpoint)
 
             # 1. Prepare Concurrency and Synchronized Start Time
-            target_concurrency = 500
+            target_concurrency = 1000
             active_workers = [w.strip() for w in LOAD_GENERATOR_URLS if w.strip()]
             worker_concurrency = max(1, target_concurrency // len(active_workers))
             start_time = int(time.time()) + 3  # Start exactly 3 seconds from now
