@@ -31,8 +31,6 @@ class SandboxManager:
                 detach=True,
                 runtime="runsc",
                 name=f"sandbox-{submission_id[:8]}-{purpose}",
-
-                cpuset_cpus="2,3",
                 cpu_period=100000,
                 cpu_quota=200000,
 

@@ -2,6 +2,9 @@ __pycache__/
 *.py[cod]
 .vscode/
 
-submission_engine/AbhiDev.venv/
+submission_engine/.venv/
+submission_engine/.env
 submission_engine/submissions/
 stress_submissions/
+frontend/.env
+frontend/.env.production

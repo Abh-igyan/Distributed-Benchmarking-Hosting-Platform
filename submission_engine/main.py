@@ -11,20 +11,29 @@ import uuid
 import os
 from sandbox import SandboxManager
 import httpx
+import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:5173"
 ).split(",")
 
-LOAD_GENERATOR_URL = os.getenv(
-    "LOAD_GENERATOR_URL",
-    "http://localhost:8001"
-)
+LOAD_GENERATOR_URLS = os.getenv(
+    "LOAD_GENERATOR_URLS",
+    os.getenv("LOAD_GENERATOR_URL", "http://localhost:8001")
+).split(",")
 
 DATABASE_URL= os.getenv(
     "DATABASE_URL",
     "postgresql://iicpc:iicpc_password@localhost:5432/iicpc"
+)
+
+HOST_IP = os.getenv(
+    "HOST_IP",
+    "localhost"
 )
 
 
@@ -37,6 +46,7 @@ async def lifespan(app: FastAPI):
 
     await app.state.db.close()
     print("Database pool closed cleanly.")
+
 
 app = FastAPI(lifespan=lifespan)
 async def db_create_submission(submission_id, filename, contestant_name, language, metadata):
@@ -195,6 +205,7 @@ websocket_clients=set()
 SUBMISSION_DIR = "/tmp/iicpc_submissions"
 os.makedirs(SUBMISSION_DIR, exist_ok=True)
 
+
 async def background_deploy(submission_id, zip_path, metadata):
     try:
         image_tag = await sandbox.build(submission_id, zip_path)
@@ -227,23 +238,66 @@ async def background_deploy(submission_id, zip_path, metadata):
             await db_update_submission_status(submission_id, "starting_benchmark", endpoint=benchmark_endpoint)
             await wait_for_health(client, benchmark_endpoint)
 
+            # 1. Prepare Concurrency and Synchronized Start Time
+            target_concurrency = 500
+            active_workers = [w.strip() for w in LOAD_GENERATOR_URLS if w.strip()]
+            worker_concurrency = max(1, target_concurrency // len(active_workers))
+            start_time = int(time.time()) + 3  # Start exactly 3 seconds from now
+
+            # Replace localhost with Orchestrator's IP so remote workers know where to attack
+            remote_benchmark_endpoint = benchmark_endpoint.replace("localhost", HOST_IP).replace("127.0.0.1", HOST_IP)
+
             go_payload={
                 "submission_id": submission_id,
-                "endpoint": benchmark_endpoint,
-                "concurrency": 500,         # Dynamically spin up 100 bot loops
-                "duration_seconds": 10      # Storm target for 15 seconds
+                "endpoint": remote_benchmark_endpoint,
+                "concurrency": worker_concurrency,
+                "duration_seconds": 10,
+                "start_time": start_time
             }
             sandbox.containers[submission_id]["status"]="benchmarking"
-            await db_update_submission_status(submission_id, "benchmarking", endpoint=benchmark_endpoint)
-            response=await client.post(
-                f"{LOAD_GENERATOR_URL}/benchmark",
-                json=go_payload,
-                timeout=go_payload["duration_seconds"]+20
-            )
-            if response.status_code==200:
-                print(f"[{submission_id}] Successfully handed off to Go Load Generator.")
+            await db_update_submission_status(submission_id, "benchmarking", endpoint=remote_benchmark_endpoint)
+            
+            # 2. Scatter: Send HTTP commands to all Go workers concurrently
+            tasks = []
+            for worker_url in active_workers:
+                tasks.append(client.post(
+                    f"{worker_url}/benchmark",
+                    json=go_payload,
+                    timeout=go_payload["duration_seconds"]+20
+                ))
+            
+            # Wait for all workers to finish their 10-second storm
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+            successful_responses = [r for r in responses if isinstance(r, httpx.Response) and r.status_code == 200]
+
+            # 3. Gather: Ensure all workers responded successfully before calculating metrics
+            if len(successful_responses) == len(active_workers) and len(active_workers) > 0:
+                print(f"[{submission_id}] Successfully gathered metrics from all {len(active_workers)} Go Load Generators.")
                 
-                result=response.json()
+                total_requests = sum(r.json().get("total_requests", 0) for r in successful_responses)
+                success = sum(r.json().get("success", 0) for r in successful_responses)
+                failures = sum(r.json().get("failures", 0) for r in successful_responses)
+                
+                # Aggregate basic metrics
+                result = {
+                    "total_requests": total_requests,
+                    "success": success,
+                    "failures": failures,
+                    "tps": success / (0.75*go_payload["duration_seconds"]) if go_payload["duration_seconds"] > 0 else 0,
+                    "error_rate": (failures / total_requests * 100) if total_requests > 0 else 100,
+                    "avg_latency_ms": max((r.json().get("avg_latency_ms", 0) for r in successful_responses), default=0),
+                    "p50_latency_ms": max((r.json().get("p50_latency_ms", 0) for r in successful_responses), default=0),
+                    "p90_latency_ms": max((r.json().get("p90_latency_ms", 0) for r in successful_responses), default=0),
+                    "p99_latency_ms": max((r.json().get("p99_latency_ms", 0) for r in successful_responses), default=0),
+                }
+                
+                # Safely merge status code dictionaries
+                combined_status_codes = {}
+                for r in successful_responses:
+                    for code, count in r.json().get("status_codes", {}).items():
+                        combined_status_codes[code] = combined_status_codes.get(code, 0) + count
+                result["status_codes"] = combined_status_codes
+                
                 result["submission_id"] = submission_id
                 result.update(metadata)
                 result["correctness_score"] = correctness_score["score"]
@@ -258,9 +312,9 @@ async def background_deploy(submission_id, zip_path, metadata):
                 except Exception as broadcast_error:
                     print(f"[{submission_id}] Leaderboard broadcast failed: {broadcast_error}")
             else:
-                print(f"[{submission_id}] Go load generator rejected request: {response.text}")
+                print(f"[{submission_id}] One or more Go load generators failed. Responses: {responses}")
                 sandbox.containers[submission_id]["status"] = "failed_handoff"
-                await db_update_submission_status(submission_id, "failed_handoff", error=response.text)
+                await db_update_submission_status(submission_id, "failed_handoff", error="Worker failure or timeout")
 
 
 

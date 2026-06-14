@@ -1,0 +1,16 @@
+[Unit]
+Description=FastAPI Orchestrator Backend
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Distributed-Benchmarking-Hosting-Platform/submission_engine
+EnvironmentFile=/home/ubuntu/Distributed-Benchmarking-Hosting-Platform/submission_engine/.env
+# Note: If you use a virtual environment, change this to your venv uvicorn path (e.g., /home/abhigyan/venv/bin/uvicorn)
+ExecStart=/home/ubuntu/Distributed-Benchmarking-Hosting-Platform/submission_engine/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
