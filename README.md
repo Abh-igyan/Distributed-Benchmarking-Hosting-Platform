@@ -392,7 +392,3 @@ These are useful for checking latency degradation, incorrect behavior, invalid-o
 - **FastAPI**: For the blazing-fast, async-native Python web orchestration.
 - **Go**: For the lightweight Goroutines powering the massive concurrency of the load generator fleet.
 - **Mermaid.js**: For the declarative, code-based system architecture diagrams.
-
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for details.
