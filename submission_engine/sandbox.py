@@ -172,8 +172,54 @@ COPY . /app
 RUN g++ -O3 -o program {entry_file}
 CMD ["./program"]
 """
+        # Check for Go
+        elif any(f.endswith('.go') for f in files) or "go.mod" in files:
+            dockerfile_content = """FROM golang:1.21-alpine
+WORKDIR /app
+COPY . /app
+RUN if [ ! -f go.mod ]; then go mod init sandbox; fi && go mod tidy
+RUN go build -o program .
+EXPOSE 8080
+CMD ["./program"]
+"""
+        # Check for Rust
+        elif "Cargo.toml" in files or any(f.endswith('.rs') for f in files):
+            dockerfile_content = """FROM rust:1.75
+WORKDIR /app
+COPY . /app
+RUN if [ -f Cargo.toml ]; then \
+    cargo build --release; \
+else \
+    rustc -O -o program $(ls *.rs | head -n 1); \
+fi
+EXPOSE 8080
+CMD ["sh", "-c", "if [ -f Cargo.toml ]; then cargo run --release; else ./program; fi"]
+"""
+        # Check for Java
+        elif "pom.xml" in files or any(f.endswith('.java') for f in files):
+            dockerfile_content = """FROM maven:3.9-eclipse-temurin-21
+WORKDIR /app
+COPY . /app
+RUN if [ -f pom.xml ]; then \
+    mvn clean package; \
+else \
+    javac *.java; \
+fi
+EXPOSE 8080
+CMD ["sh", "-c", "if [ -f pom.xml ]; then java -jar target/*.jar; else java Main; fi"]
+"""
+        # Check for Node.js / TypeScript
+        elif "package.json" in files or any(f.endswith('.js') or f.endswith('.ts') for f in files):
+            dockerfile_content = """FROM node:20-alpine
+WORKDIR /app
+COPY . /app
+RUN if [ -f package.json ]; then npm install; fi
+RUN if ls *.ts >/dev/null 2>&1; then npm install -g typescript tsx; fi
+EXPOSE 8080
+CMD ["sh", "-c", "if [ -f package.json ] && grep -q '\"start\"' package.json; then npm start; elif ls *.ts >/dev/null 2>&1; then tsx $(ls *.ts | head -n 1); else node $(ls *.js | head -n 1); fi"]
+"""
         else:
-            raise ValueError("Could not determine language. No .py or .cpp files found.")
+            raise ValueError("Could not determine language. No .py, .cpp, .go, .rs, .java, .js, or .ts files found.")
 
         with open(dockerfile_path, "w") as f:
             f.write(dockerfile_content)

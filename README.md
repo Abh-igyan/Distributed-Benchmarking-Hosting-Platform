@@ -1,4 +1,4 @@
-# Vahini: Trading Code Benchmarking & Hosting Platform 
+# Vahini: The Distributed Benchmarking & Hosting Platform 
 # [Live Demo](http://43.204.202.86:5173/) <- click
 
 Vahini is a benchmarking and hosting platform for evaluating contestant-submitted trading engines. It accepts source-code ZIP submissions, builds and runs them in isolated Docker containers, validates exchange correctness, drives high-concurrency order traffic with a Go load generator, persists benchmark results in PostgreSQL, and streams rankings to a React leaderboard.
@@ -9,7 +9,9 @@ The name **Vahini** means "flowing" or "stream" in Hindi and Sanskrit, reflectin
 
 ## Current Status
 
-Vahini is fully operational and deployed on AWS EC2. The EC2 instance hosts the FastAPI submission engine, Go load generator, Docker sandbox runtime, and the built React frontend. The platform uses an Amazon RDS PostgreSQL database for reliable, persistent storage of submissions, correctness checks, and benchmark results.
+Vahini is fully operational and deployed on AWS EC2 and is evolving from a monolithic host into a distributed architecture. A dedicated orchestrator instance now handles submission routing, benchmark coordination, and result collection, while three worker instances run sandboxed builds and benchmark tasks.
+
+The platform continues to persist submission state and benchmark results in PostgreSQL, with future expansion plans to decouple coordination using message queues and add specialized stores such as ClickHouse, Redis, and Kafka/Redpanda for higher throughput, analytics, and worker coordination.
 
 ## What It Does
 
