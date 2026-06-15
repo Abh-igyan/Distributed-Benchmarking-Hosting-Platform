@@ -9,10 +9,61 @@ The name **Vahini** means "flowing" or "stream" in Hindi and Sanskrit, reflectin
 
 ## Current Status
 
-Vahini is fully operational and deployed on AWS EC2 and is evolving from a monolithic host into a distributed architecture. A dedicated orchestrator instance now handles submission routing, benchmark coordination, and result collection, while three worker instances run sandboxed builds and benchmark tasks.
+Vahini is fully operational and deployed on AWS EC2 utilizing a **Scatter-Gather distributed topology**. A central FastAPI Orchestrator instance handles submission routing, sandboxed builds, and result collection, while horizontally scalable Go worker instances run on internal AWS subnets to blast concurrent order traffic.
 
 The platform continues to persist submission state and benchmark results in PostgreSQL, with future expansion plans to decouple coordination using message queues and add specialized stores such as ClickHouse, Redis, and Kafka/Redpanda for higher throughput, analytics, and worker coordination.
 
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    %% Styling
+    classDef frontend fill:#61dafb,stroke:#000,stroke-width:2px,color:#000
+    classDef python fill:#ffd43b,stroke:#3776ab,stroke-width:2px,color:#000
+    classDef db fill:#336791,stroke:#fff,stroke-width:2px,color:#fff
+    classDef go fill:#00add8,stroke:#000,stroke-width:2px,color:#fff
+    classDef docker fill:#0db7ed,stroke:#000,stroke-width:2px,color:#000
+    classDef aws fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#000
+
+    subgraph Internet ["Public Internet"]
+        UserBrowser["🌐 User Browser\n(React Frontend)"]:::frontend
+    end
+
+    subgraph AWS ["AWS Virtual Private Cloud (VPC)"]
+        subgraph OrchestratorNode ["Central Orchestrator (EC2: 106.222.224.67)"]
+            FastAPI["⚡ FastAPI Backend\n(Port 8000)"]:::python
+            Postgres[("🐘 PostgreSQL DB\n(Leaderboard/Scores)")]:::db
+            
+            subgraph DockerEnv ["Docker Runtime"]
+                gVisor["🛡️ gVisor Sandbox (runsc)\n(Port 8080)"]:::docker
+                ContestantCode["Contestant Trading Engine\n(C++, Go, Rust, Java, etc.)"]
+                gVisor --- ContestantCode
+            end
+        end
+
+        subgraph WorkerFleet ["Load Generator Fleet (EC2 Private Subnet)"]
+            GoWorker1["🐹 Go Worker Node 1\n(172.31.8.102:8001)"]:::go
+            GoWorker2["🐹 Go Worker Node 2\n(172.31.6.96:8001)"]:::go
+            GoWorker3["🐹 Go Worker Node 3\n(172.31.13.78:8001)"]:::go
+        end
+    end
+
+    %% Relationships
+    UserBrowser -- "1. Uploads ZIP (REST)" --> FastAPI
+    FastAPI -. "2. Real-time Leaderboard (WebSockets)" .-> UserBrowser
+    
+    FastAPI -- "3. Read/Write Scores" --> Postgres
+    FastAPI -- "4. Builds & Spawns" --> gVisor
+    
+    FastAPI -- "5. Broadcasts Start Time\n(Scatter)" --> GoWorker1
+    FastAPI -- "5. Broadcasts Start Time\n(Scatter)" --> GoWorker2
+    FastAPI -- "5. Broadcasts Start Time\n(Scatter)" --> GoWorker3
+
+    GoWorker1 -- "6. High TPS Traffic" --> gVisor
+    GoWorker2 -- "6. High TPS Traffic" --> gVisor
+    GoWorker3 -- "6. High TPS Traffic" --> gVisor
+```
 ## What It Does
 
 ```text
