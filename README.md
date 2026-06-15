@@ -132,7 +132,6 @@ Infrastructure:    AWS EC2
 ├── frontend/              # React/Vite Vahini dashboard
 ├── load_generator/        # Go load generation service
 ├── submission_engine/     # FastAPI submission/sandbox/orchestration service
-├── stress_submissions/    # Local test ZIPs for failure-mode validation
 └── docs/images/           # README screenshots
 ```
 
@@ -146,7 +145,7 @@ PostgreSQL:               localhost:5432
 Submission containers:    random Docker host ports
 ```
 
-The frontend talks only to FastAPI. FastAPI coordinates Docker containers, PostgreSQL, and the Go load generator.
+The frontend talks only to FastAPI. FastAPI coordinates Docker containers, PostgreSQL, and the Go load generator instances.
 
 ## Configuration
 
