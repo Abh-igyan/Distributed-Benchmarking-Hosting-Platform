@@ -366,22 +366,33 @@ These are useful for checking latency degradation, incorrect behavior, invalid-o
 
 ## Current Limitations
 
-- The load generator is a single Go service, not yet a distributed fleet.
 - REST order traffic is implemented; FIX and WebSocket adapters are planned but not built.
 - Only limit-order traffic is currently generated during benchmark runs.
 - Authentication and team/user management are not implemented.
 - Sandbox hardening is prototype-level and should be reviewed before accepting truly untrusted public code.
-- No object storage yet for uploaded artifacts.
+- Uploaded artifacts are stored on the local filesystem (no object storage yet).
 - No Redpanda/Kafka or ClickHouse yet; these remain scale-up options.
 
 ## Future Work
 
-- Add Docker Compose for local one-command startup.
-- Add Go and Rust submission auto-detection.
 - Add market orders, cancels, and mixed traffic profiles.
-- Add richer correctness cases for price-time priority.
+- Add richer correctness cases (keeping some private) for price-time priority.
 - Add benchmark profiles configurable from the frontend.
 - Add AWS deployment scripts or Terraform.
 - Add Redpanda/Kafka for benchmark metric events.
 - Add ClickHouse for high-volume analytical queries.
 - Add S3-compatible storage for submitted artifacts.
+- Implement eBPF-based kernel latency profiling for granular performance insights.
+- Integrate Chaos Engineering (e.g., dropping network packets or terminating nodes during the benchmark storm).
+
+
+## Acknowledgments
+
+- **[gVisor](https://gvisor.dev/)**: For providing the secure application-kernel sandbox (`runsc`) that safely isolates untrusted contestant code.
+- **FastAPI**: For the blazing-fast, async-native Python web orchestration.
+- **Go**: For the lightweight Goroutines powering the massive concurrency of the load generator fleet.
+- **Mermaid.js**: For the declarative, code-based system architecture diagrams.
+
+## License
+
+This project is licensed under the MIT License. See the LICENSE file for details.
